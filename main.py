@@ -11,19 +11,20 @@ from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import Message, CallbackQuery, BotCommand, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup
+from moviepy.audio.io.AudioFileClip import AudioFileClip
+from moviepy.video.io.VideoFileClip import VideoFileClip
 from pytube import YouTube
+from pytube.innertube import _default_clients
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
+from buttons import language_inline_keyboard
 from db.config import Base, engine
 from db.model import User
 from language import data
-from buttons import language_inline_keyboard
 from state import UserState
 from text import start_text, help_text
 from utils import format_view, format_duration, format_size
-
-from pytube.innertube import _default_clients
 
 _default_clients["ANDROID_MUSIC"] = _default_clients["ANDROID_CREATOR"]
 
@@ -95,51 +96,49 @@ async def language_handler(callback_query: CallbackQuery, state: FSMContext):
 
 
 @dp.message()
-async def video_url_handler(msg: Message) -> None:
+async def video_url_handler(msg: Message):
     if msg.text.startswith(('https://youtu.be/', 'https://www.youtube.com/')):
+        try:
+            yt = YouTube(msg.text)
+            title = f'🎬 {yt.title}\n'
+            views = f'👁 {format_view(yt.views)}\n'
+            published_at = f'📥 {str(yt.publish_date)[:10]}\n'
+            author = f'👤 {yt.author}\n'
+            if 'VEVO' in author:
+                author = author[:-5] + '\n'
+            length = f'⏳ {format_duration(yt.length)}\n\n'
+            addition = 'I can download these tracks:'
+            text = title + views + published_at + author + length + addition
 
-        yt = YouTube(msg.text)
-        title = f'🎬 {yt.title}\n'
-        views = f'👁 {format_view(yt.views)}\n'
-        published_at = f'📥 {str(yt.publish_date)[:10]}\n'
-        author = f'👤 {yt.author}\n'
-        if 'VEVO' in author:
-            author = author[:-5] + '\n'
-        length = f'⏳ {format_duration(yt.length)}\n\n'
-        addition = 'I can download these tracks:'
-        text = title + views + published_at + author + length + addition
+            video_streams = yt.streams.filter(file_extension='mp4', only_video=True).desc()
+            audio_stream = yt.streams.filter(file_extension='mp4', only_audio=True).first()
+            resolutions = [
+                [InlineKeyboardButton(
+                    text=f'📹{stream.resolution} - {format_size(stream.filesize)}',
+                    callback_data=f"{msg.text}|{stream.itag}")]
+                for stream in video_streams
+            ]
+            resolutions.extend(
+                [[InlineKeyboardButton(text=f'🔉 Audio - {format_size(audio_stream.filesize)}',
+                                       callback_data=f"{msg.text}|{audio_stream.itag}")]])
 
-        video_streams = yt.streams.filter(only_video=True, file_extension='mp4')
-        audio_streams = yt.streams.filter(only_audio=True, file_extension='mp4')
-        resolutions = [
-            [InlineKeyboardButton(
-                text=f'📹{stream.resolution} - {format_size(stream.filesize)}',
-                callback_data=f"{msg.text}|{stream.itag}")]
-            for stream in video_streams[::-1]
-        ]
-        resolutions.extend([
-            [InlineKeyboardButton(
-                text=f'🔉 Audio - {format_size(stream.filesize)}',
-                callback_data=f"{msg.text}|{stream.itag}")]
-            for stream in audio_streams
-        ])
+            resolutions_kb = InlineKeyboardMarkup(inline_keyboard=resolutions)
 
-        resolutions_kb = InlineKeyboardMarkup(inline_keyboard=resolutions)
-
-        await msg.answer_photo(photo=yt.thumbnail_url, caption=text, reply_markup=resolutions_kb)
-        await msg.answer_photo(photo=yt.thumbnail_url, caption=text)
+            await msg.answer_photo(photo=yt.thumbnail_url, caption=text, reply_markup=resolutions_kb)
+        except Exception as e:
+            await msg.answer(f'An error has occurred: {e}')
     else:
         await msg.answer(text="👻 I can't find the link in your message.\n\nGive me a link 👌")
 
 
 @dp.callback_query()
-async def download_handler(callback_query: CallbackQuery) -> None:
+async def download_handler(callback_query: CallbackQuery):
     try:
         data = callback_query.data
         if '|' not in data:
             raise ValueError('Invalid callback data format.')
 
-        url, itag = data.rsplit('|', 1)  # Split only on the last '|'
+        url, itag = data.rsplit('|', 1)
         await callback_query.answer('Downloading file... Please wait.')
         await youtube_video_downloader(url, callback_query.message, int(itag))
     except Exception as e:
@@ -163,10 +162,9 @@ async def youtube_video_downloader(url, msg, itag):
             input_file = FSInputFile(file_path)
 
             if stream.type == 'video':
-                await bot.send_video(msg.chat.id, input_file, caption='*This is your video*', parse_mode='Markdown')
-                await msg.answer_video()
+                await msg.answer_video(input_file, caption='@illegal_testing_bot')
             elif stream.type == 'audio':
-                await bot.send_audio(msg.chat.id, input_file, caption='*This is your audio*', parse_mode='Markdown')
+                await msg.answer_audio(input_file, caption='@illegal_testing_bot')
 
             os.remove(file_path)
             try:
